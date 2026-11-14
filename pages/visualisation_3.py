@@ -22,14 +22,21 @@ st.markdown("Multivariate demographic and socioeconomic analysis powered by open
 # ==========================================
 @st.cache_data(ttl=86400)  # Cache data for 24 hours for fast performance
 def load_and_process_data():
-    url_birth = 'https://storage.dosm.gov.my/demography/birth.parquet'
-    url_life = 'https://storage.dosm.gov.my/demography/life_expectancy_state_ethnic.parquet'
-    # Note: Ensure the wages URL below matches your original Colab dataset URL
-    url_wages = 'https://storage.dosm.gov.my/labour/wages_annual_sex_ethnic.parquet'
+    urls = {
+        "birth": "https://storage.dosm.gov.my/demography/birth.parquet",
+        "life": "https://storage.dosm.gov.my/demography/life_expectancy_state_ethnic.parquet",
+        # Replace this URL with the exact working wages URL from your Colab notebook if needed
+        "wages": "https://storage.dosm.gov.my/labour/wages_annual_sex_ethnic.parquet",
+    }
 
-    df_birth = pd.read_parquet(url_birth)
-    df_life = pd.read_parquet(url_life)
-    df_wages = pd.read_parquet(url_wages)
+    dfs = {}
+    for name, url in urls.items():
+        try:
+            dfs[name] = pd.read_parquet(url)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load '{name}' from {url} -> {e}")
+
+    df_birth, df_life, df_wages = dfs["birth"], dfs["life"], dfs["wages"]
 
     # Extract year from the date column
     for df in [df_birth, df_life, df_wages]:
@@ -61,7 +68,7 @@ with st.spinner("Fetching and processing datasets from DOSM servers..."):
         merged_df = load_and_process_data()
     except Exception as e:
         st.error(f"Error loading datasets: {e}")
-        st.info("Tip: Double-check your `url_wages` link or internet connection.")
+        st.info("Tip: Double-check your `wages` URL from Colab or check OpenDOSM for the updated parquet link.")
         st.stop()
 
 # ==========================================
