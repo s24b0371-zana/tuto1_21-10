@@ -4,14 +4,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # ==========================================
-# 1. TETAPAN HALAMAN & TAJUK
+# 1. TAJUK & PENERANGAN
 # ==========================================
-st.set_page_config(
-    page_title="Visualisasi Kelahiran Hidup Malaysia",
-    page_icon="📊",
-    layout="wide"
-)
-
 st.title("📊 Trend Kelahiran Hidup & Kadar Kelahiran Kasar di Malaysia")
 st.markdown(
     "Sumber data: **Jabatan Perangkaan Malaysia (DOSM / OpenDOSM)** — `birth.parquet`"
@@ -33,7 +27,7 @@ def load_birth_data():
 df_birth = load_birth_data()
 
 # ==========================================
-# 3. PENAPIS INTERAKTIF (SIDEBAR / ATAS)
+# 3. PENAPIS INTERAKTIF (SLIDER TAHUN)
 # ==========================================
 min_year = int(df_birth["year"].min())
 max_year = int(df_birth["year"].max())
@@ -63,7 +57,7 @@ if not df_plot.empty:
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(
-            label=f"Tahun Terkini Dipilih",
+            label="Tahun Terkini Dipilih",
             value=f"{int(latest_row['year'])}"
         )
     with col2:
@@ -87,7 +81,6 @@ st.write("")
 sns.set_theme(style="whitegrid")
 fig, ax1 = plt.subplots(figsize=(13, 6))
 
-# Bar untuk Jumlah Kelahiran Hidup
 ax1.bar(
     df_plot["year"], df_plot["abs"],
     color="#2b5c8f", alpha=0.85, width=0.6,
@@ -98,4 +91,34 @@ ax1.set_title(
     fontsize=13, fontweight="bold", pad=15
 )
 ax1.set_xlabel("Year", fontweight="bold")
-ax1.set_ylabel("Total Live Births (abs)", color="#2b5c8f", fontweight
+ax1.set_ylabel("Total Live Births (abs)", color="#2b5c8f", fontweight="bold")
+ax1.set_xticks(df_plot["year"])
+ax1.tick_params(axis="x", rotation=45)
+ax1.set_ylim(0, df_plot["abs"].max() * 1.15)
+
+ax2 = ax1.twinx()
+ax2.plot(
+    df_plot["year"], df_plot["rate"],
+    color="#d95f02", marker="o", linewidth=2.5,
+    label="Crude Birth Rate (per 1,000 population)"
+)
+ax2.set_ylabel("Crude Birth Rate", color="#d95f02", fontweight="bold")
+ax2.set_ylim(0, df_plot["rate"].max() * 1.15)
+ax2.grid(False)
+
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+
+plt.tight_layout()
+st.pyplot(fig)
+
+# ==========================================
+# 6. PAPARAN DATA MENTAH (BOLEH BUKA/TUTUP)
+# ==========================================
+with st.expander("📋 Lihat Jadual Data Terperinci"):
+    st.dataframe(
+        df_plot[["year", "date", "abs", "rate"]].sort_values("year", ascending=False),
+        use_container_width=True,
+        hide_index=True
+    )
