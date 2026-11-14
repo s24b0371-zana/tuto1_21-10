@@ -1,37 +1,28 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# ==========================================
-# 0. PAGE CONFIG
-# ==========================================
-st.set_page_config(
-    page_title="Malaysia Demographic & Socioeconomic Analysis",
-    layout="wide"
-)
-
-st.title("Malaysia's Live Births, Life Expectancy & Annual Income (2022–2025)")
-st.markdown("Multivariate analysis examining demographic transition across ethnic groups in Malaysia.")
+# Note: st.set_page_config() is omitted here so it won't conflict with your main.py page config.
+st.title("Malaysia's Live Births, Life Expectancy & Annual Income")
+st.markdown("Interactive multivariate analysis examining Malaysia's demographic and socioeconomic transition.")
 
 # ==========================================
 # 1. LOAD & PREPROCESS DATA (CACHED)
 # ==========================================
 @st.cache_data
 def load_and_prepare_data():
-    # Option A: Load directly from OpenDOSM / DOSM official storage
-    # (Replace these URLs with pd.read_csv('your_local_file.csv') if using local files)
-    url_birth = "https://storage.dosm.gov.my/demography/birth.parquet"
+    # Official OpenDOSM storage URLs (with fallback to local CSVs in root repo)
+    url_birth = "https://storage.dosm.gov.my/demography/births_annual.parquet"
     url_life = "https://storage.dosm.gov.my/demography/life_expectancy.parquet"
-    url_wages = "https://storage.dosm.gov.my/labour/wages_annual.parquet"  # Adjust if using quarterly/monthly
+    url_wages = "https://storage.dosm.gov.my/labour/wages_annual.parquet"
 
     try:
         birth = pd.read_parquet(url_birth)
         life = pd.read_parquet(url_life)
         wages = pd.read_parquet(url_wages)
     except Exception:
-        # Option B: Fallback to local CSV files in your project folder
         birth = pd.read_csv("df_birth.csv")
         life = pd.read_csv("df_life.csv")
         wages = pd.read_csv("df_wages.csv")
@@ -40,7 +31,7 @@ def load_and_prepare_data():
     for df in [birth, life, wages]:
         df['year'] = pd.to_datetime(df['date']).dt.year
 
-    # Aggregate birth data to annual if the dataset is monthly/quarterly
+    # Aggregate birth data to annual if monthly/quarterly
     if birth.duplicated(subset=['year']).any():
         birth = (
             birth.groupby('year', as_index=False)
@@ -53,6 +44,13 @@ def load_and_prepare_data():
         .mean()
         .rename(columns={'life_expectancy': 'avg_life_expectancy'})
     )
+
+    # Ensure wages are annual per (year, sex, ethnicity)
+    if wages.duplicated(subset=['year', 'sex', 'ethnicity']).any():
+        wages = (
+            wages.groupby(['year', 'sex', 'ethnicity'], as_index=False)[['wages_median', 'wages_mean']]
+            .mean()
+        )
 
     # Calculate annual income (Monthly Wage x 12)
     wages['annual_income_median'] = wages['wages_median'] * 12
@@ -70,14 +68,38 @@ def load_and_prepare_data():
 try:
     merged_df = load_and_prepare_data()
 except Exception as e:
-    st.error(f"Could not load datasets. Ensure your CSV/Parquet files are in the same directory or check internet access. Error: {e}")
+    st.error(
+        "Could not load datasets. Upload `df_birth.csv`, `df_life.csv`, and `df_wages.csv` "
+        f"to the root folder of your GitHub repository. Details: {e}"
+    )
     st.stop()
 
 # ==========================================
 # 2. SIDEBAR INTERACTIVE CONTROLS
 # ==========================================
-st.sidebar.header("Dashboard Controls")
+st.sidebar.header("Interactive Filters")
 
+# 1. Year Range Slider
+min_yr = int(merged_df['year'].min())
+max_yr = int(merged_df['year'].max())
+year_range = st.sidebar.slider(
+    "Select Year Range:",
+    min_value=min_yr,
+    max_value=max_yr,
+    value=(min_yr, max_yr),
+    step=1
+)
+
+# 2. Sex Selector
+sex_options = [s for s in ['both', 'male', 'female'] if s in merged_df['sex'].unique()]
+selected_sex = st.sidebar.selectbox(
+    "Sex Category:",
+    options=sex_options,
+    index=0,
+    format_func=lambda x: "Both Sexes" if x == "both" else x.capitalize()
+)
+
+# 3. Income Metric Toggle
 income_metric = st.sidebar.radio(
     "Income Metric:",
     options=["Median Annual Income", "Mean Annual Income"],
@@ -85,148 +107,261 @@ income_metric = st.sidebar.radio(
 )
 income_col = "annual_income_median" if income_metric == "Median Annual Income" else "annual_income_mean"
 
-available_ethnicities = ['chinese', 'bumi', 'indian', 'overall']
-selected_ethnicities = st.sidebar.multiselect(
-    "Select Ethnic Groups (Panel A):",
-    options=available_ethnicities,
-    default=available_ethnicities,
-    format_func=lambda x: "Malaysia Overall" if x == "overall" else ("Bumiputera" if x == "bumi" else x.capitalize())
-)
-
-show_data = st.sidebar.checkbox("Show Merged Data Table", value=False)
-
-# Filter for combined sex ('both') and selected ethnic groups
-plot_df = merged_df[
-    (merged_df['sex'] == 'both') &
-    (merged_df['ethnicity'].isin(selected_ethnicities))
-].sort_values(['ethnicity', 'year'])
-
-overall_df = merged_df[
-    (merged_df['sex'] == 'both') &
-    (merged_df['ethnicity'] == 'overall')
-].sort_values('year')
-
-# ==========================================
-# 3. TWO-PANEL MULTIVARIATE VISUALIZATION
-# ==========================================
-plt.rcParams['font.sans-serif'] = 'DejaVu Sans'
-plt.rcParams['axes.edgecolor'] = '#CCCCCC'
-plt.rcParams['axes.linewidth'] = 0.8
-
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6.5), gridspec_kw={'width_ratios': [1.25, 1]})
-fig.patch.set_facecolor('white')
-
-palette = {
+# 4. Ethnic Group Multiselect
+eth_map = {
     'chinese': ('#1f77b4', 'Chinese'),
     'bumi': ('#2ca02c', 'Bumiputera'),
     'indian': ('#d62728', 'Indian'),
     'overall': ('#333333', 'Malaysia Overall')
 }
+available_ethnicities = [e for e in ['chinese', 'bumi', 'indian', 'overall'] if e in merged_df['ethnicity'].unique()]
+selected_ethnicities = st.sidebar.multiselect(
+    "Select Ethnic Groups (Panel A):",
+    options=available_ethnicities,
+    default=available_ethnicities,
+    format_func=lambda x: eth_map[x][1]
+)
 
-# --- PANEL A: Connected Multivariate Bubble Trajectory ---
-if not plot_df.empty:
-    min_year, max_year = int(plot_df['year'].min()), int(plot_df['year'].max())
+# 5. Panel B Focus Group
+panel_b_group = st.sidebar.selectbox(
+    "Panel B Focus Group:",
+    options=available_ethnicities,
+    index=available_ethnicities.index('overall') if 'overall' in available_ethnicities else 0,
+    format_func=lambda x: eth_map[x][1]
+)
 
-    for eth in selected_ethnicities:
-        color, label = palette[eth]
-        sub = plot_df[plot_df['ethnicity'] == eth].sort_values('year')
-        if sub.empty:
-            continue
+show_labels = st.sidebar.checkbox("Show Year Labels on Trajectory", value=True)
+show_data = st.sidebar.checkbox("Show Filtered Data Table", value=False)
 
-        x = sub[income_col].values
-        y = sub['avg_life_expectancy'].values
-        sizes = ((sub['live_births'] - 380000) / 1000).clip(lower=10) * 6 + 140
+# Filter datasets
+filtered_df = merged_df[
+    (merged_df['year'] >= year_range[0]) &
+    (merged_df['year'] <= year_range[1]) &
+    (merged_df['sex'] == selected_sex)
+].sort_values(['ethnicity', 'year'])
 
-        # Trajectory line
-        ax1.plot(x, y, color=color, linewidth=2, alpha=0.75, zorder=2)
+plot_df = filtered_df[filtered_df['ethnicity'].isin(selected_ethnicities)]
+macro_df = filtered_df[filtered_df['ethnicity'] == panel_b_group].sort_values('year')
 
-        # Directional arrow if at least 2 years exist
-        if len(x) >= 2:
-            ax1.annotate(
-                '', xy=(x[-1], y[-1]), xytext=(x[-2], y[-2]),
-                arrowprops=dict(arrowstyle='->', color=color, lw=2.2), zorder=3
-            )
+# ==========================================
+# 3. TOP KPI SUMMARY CARDS (DYNAMIC)
+# ==========================================
+if len(macro_df) >= 2:
+    start_row = macro_df.iloc[0]
+    end_row = macro_df.iloc[-1]
+    yr_span = f"{int(start_row['year'])} → {int(end_row['year'])}"
 
-        # Plot bubbles
-        ax1.scatter(
-            x, y, s=sizes, color=color, alpha=0.82,
-            edgecolors='white', linewidth=1.5, label=label, zorder=4
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        birth_diff = int(end_row['live_births'] - start_row['live_births'])
+        st.metric(
+            label=f"National Live Births ({int(end_row['year'])})",
+            value=f"{int(end_row['live_births']):,}",
+            delta=f"{birth_diff:+,} since {int(start_row['year'])}"
+        )
+    with col2:
+        inc_diff = end_row[income_col] - start_row[income_col]
+        st.metric(
+            label=f"{eth_map[panel_b_group][1]} {income_metric}",
+            value=f"RM {end_row[income_col]:,.0f}",
+            delta=f"RM {inc_diff:+,.0f} ({yr_span})"
+        )
+    with col3:
+        le_diff = end_row['avg_life_expectancy'] - start_row['avg_life_expectancy']
+        st.metric(
+            label=f"{eth_map[panel_b_group][1]} Life Expectancy",
+            value=f"{end_row['avg_life_expectancy']:.2f} yrs",
+            delta=f"{le_diff:+.2f} yrs ({yr_span})"
         )
 
-        # Annotate start and end years
-        for yr, xi, yi in zip(sub['year'], x, y):
-            if yr in [min_year, max_year]:
-                offset_y = 0.18 if yr == max_year else -0.26
-                ax1.text(
-                    xi, yi + offset_y, f"{yr}", fontsize=8.5, fontweight='bold',
-                    color=color, ha='center', va='center', zorder=5
-                )
-
-    ax1.set_title(
-        f'A. {income_metric} vs. Life Expectancy by Ethnicity\n(Bubble Size = National Live Births, {min_year}–{max_year})',
-        fontsize=11.5, fontweight='bold', pad=12, color='#111111'
-    )
-    ax1.set_xlabel(f'{income_metric} (RM)', fontsize=10.5, fontweight='bold', labelpad=8)
-    ax1.set_ylabel('Average Life Expectancy (Years)', fontsize=10.5, fontweight='bold', labelpad=8)
-    ax1.xaxis.set_major_formatter(ticker.StrMethodFormatter('RM {x:,.0f}'))
-    ax1.xaxis.set_major_locator(ticker.MultipleLocator(4000))
-    ax1.margins(x=0.12, y=0.15)  # Dynamic padding instead of hardcoded limits
-    ax1.grid(True, linestyle='--', alpha=0.4, color='#BBBBBB')
-    ax1.legend(loc='lower right', frameon=True, facecolor='#F9F9F9', title=f'Group ({min_year} → {max_year})', fontsize=9)
-else:
-    ax1.text(0.5, 0.5, "Select at least one ethnic group in the sidebar.", ha='center', va='center')
-
-# --- PANEL B: Malaysia Macro Demographic Transition (Dual-Axis) ---
-if not overall_df.empty:
-    years = overall_df['year'].astype(str)
-    ax2_twin = ax2.twinx()
-
-    # Bar chart for Live Births
-    bars = ax2.bar(years, overall_df['live_births'] / 1000, color='#A6CEE3', width=0.48, alpha=0.85, label='Live Births (Thousands)')
-    ax2.set_ylabel('Live Births (Thousands)', fontsize=10.5, fontweight='bold', color='#1F78B4', labelpad=8)
-    ax2.set_ylim(0, (overall_df['live_births'].max() / 1000) * 1.25)
-    ax2.tick_params(axis='y', labelcolor='#1F78B4')
-
-    for bar in bars:
-        h = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2, h + 6, f"{h:.1f}k", ha='center', va='bottom', fontsize=8.5, color='#1F78B4', fontweight='bold')
-
-    # Line chart for Annual Income + Life Expectancy labels
-    inc_k = overall_df[income_col] / 1000
-    ax2_twin.plot(years, inc_k, color='#E31A1C', marker='o', linewidth=2.5, markersize=7, label=f"{income_metric} (RM '000)")
-    ax2_twin.set_ylabel(f"{income_metric} (RM '000)", fontsize=10.5, fontweight='bold', color='#E31A1C', labelpad=8)
-    ax2_twin.set_ylim(inc_k.min() * 0.85, inc_k.max() * 1.18)
-    ax2_twin.tick_params(axis='y', labelcolor='#E31A1C')
-
-    for idx, (inc, le_val) in enumerate(zip(inc_k, overall_df['avg_life_expectancy'])):
-        ax2_twin.text(idx, inc + (inc_k.max() * 0.02), f"RM {inc:.1f}k\n({le_val:.1f} yrs)", ha='center', va='bottom', fontsize=8, color='#B2182B', fontweight='bold')
-
-    ax2.set_title('B. Malaysia Macro Demographic Transition\n(Births vs. Income & Life Expectancy)',
-                  fontsize=11.5, fontweight='bold', pad=12, color='#111111')
-    ax2.set_xlabel('Year', fontsize=10.5, fontweight='bold', labelpad=8)
-    ax2.grid(True, linestyle='--', alpha=0.35, color='#BBBBBB')
-
-    lines1, labels1 = ax2.get_legend_handles_labels()
-    lines2, labels2 = ax2_twin.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', frameon=True, facecolor='#F9F9F9', fontsize=8.5)
-
-plt.suptitle("Objective 3: Malaysia's Live Births, Life Expectancy & Annual Income",
-             fontsize=13.5, fontweight='bold', y=0.99)
-plt.tight_layout(rect=[0, 0, 1, 0.94])
-
-# Render chart in Streamlit
-st.pyplot(fig)
+st.divider()
 
 # ==========================================
-# 4. OPTIONAL DATA TABLE & CSV DOWNLOAD
+# 4. INTERACTIVE PLOTLY CHARTS (2 TABS / PANELS)
+# ==========================================
+tab1, tab2 = st.tabs(["Side-by-Side Overview", "Animated Year-by-Year Trajectory"])
+
+with tab1:
+    col_left, col_right = st.columns([1.2, 1])
+
+    # --- PANEL A: Interactive Multivariate Bubble Trajectory ---
+    with col_left:
+        fig_a = go.Figure()
+
+        if not plot_df.empty:
+            for eth in selected_ethnicities:
+                color, label = eth_map[eth]
+                sub = plot_df[plot_df['ethnicity'] == eth].sort_values('year')
+                if sub.empty:
+                    continue
+
+                # Scale bubble diameter cleanly for Plotly
+                bubble_sizes = ((sub['live_births'] - 380000) / 1000).clip(lower=10) * 0.45 + 16
+                text_labels = [str(int(y)) if show_labels else "" for y in sub['year']]
+
+                fig_a.add_trace(go.Scatter(
+                    x=sub[income_col],
+                    y=sub['avg_life_expectancy'],
+                    mode='lines+markers+text',
+                    name=label,
+                    text=text_labels,
+                    textposition='top center',
+                    textfont=dict(size=10, color=color),
+                    line=dict(color=color, width=2.5),
+                    marker=dict(
+                        size=bubble_sizes,
+                        color=color,
+                        opacity=0.82,
+                        line=dict(width=1.5, color='white')
+                    ),
+                    customdata=np.stack(
+                        (sub['year'], sub['live_births'], sub['birth_rate_per_1k']),
+                        axis=-1
+                    ),
+                    hovertemplate=(
+                        f"<b>{label} (%{{customdata[0]:.0f}})</b><br>"
+                        f"{income_metric}: <b>RM %{{x:,.0f}}</b><br>"
+                        "Avg Life Expectancy: <b>%{y:.2f} yrs</b><br>"
+                        "National Live Births: <b>%{customdata[1]:,.0f}</b><br>"
+                        "Crude Birth Rate: <b>%{customdata[2]:.1f} / 1k</b>"
+                        "<extra></extra>"
+                    )
+                ))
+
+                # Add directional arrowhead on final segment
+                if len(sub) >= 2:
+                    fig_a.add_annotation(
+                        x=sub[income_col].iloc[-1],
+                        y=sub['avg_life_expectancy'].iloc[-1],
+                        ax=sub[income_col].iloc[-2],
+                        ay=sub['avg_life_expectancy'].iloc[-2],
+                        xref="x", yref="y", axref="x", ayref="y",
+                        showarrow=True,
+                        arrowhead=3,
+                        arrowsize=1.3,
+                        arrowwidth=2,
+                        arrowcolor=color
+                    )
+
+        fig_a.update_layout(
+            title=f"A. {income_metric} vs. Life Expectancy by Ethnicity<br><sup>Bubble size = National live births ({year_range[0]}–{year_range[1]})</sup>",
+            xaxis_title=f"{income_metric} (RM)",
+            yaxis_title="Average Life Expectancy (Years)",
+            xaxis=dict(tickprefix="RM ", tickformat=",.0f", gridcolor="#EEEEEE"),
+            yaxis=dict(gridcolor="#EEEEEE"),
+            plot_bgcolor="white",
+            hovermode="closest",
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+            height=540,
+            margin=dict(t=70, b=80, l=50, r=20)
+        )
+        st.plotly_chart(fig_a, use_container_width=True)
+
+    # --- PANEL B: Interactive Dual-Axis Demographic Transition ---
+    with col_right:
+        fig_b = make_subplots(specs=[[{"secondary_y": True}]])
+
+        if not macro_df.empty:
+            years_str = macro_df['year'].astype(str)
+
+            # Bar trace: Live Births
+            fig_b.add_trace(
+                go.Bar(
+                    x=years_str,
+                    y=macro_df['live_births'] / 1000,
+                    name="Live Births ('000)",
+                    marker_color="#A6CEE3",
+                    opacity=0.85,
+                    text=[f"{v/1000:.1f}k" for v in macro_df['live_births']],
+                    textposition="inside",
+                    hovertemplate="<b>Year %{x}</b><br>Live Births: <b>%{y:.1f}k</b><extra></extra>"
+                ),
+                secondary_y=False
+            )
+
+            # Line trace: Annual Income (with Life Expectancy in hover)
+            fig_b.add_trace(
+                go.Scatter(
+                    x=years_str,
+                    y=macro_df[income_col] / 1000,
+                    name=f"{income_metric} (RM '000)",
+                    mode="lines+markers+text",
+                    line=dict(color="#E31A1C", width=3),
+                    marker=dict(size=9, color="#E31A1C"),
+                    text=[f"RM {inc/1000:.1f}k" for inc in macro_df[income_col]],
+                    textposition="top center",
+                    textfont=dict(size=10, color="#B2182B"),
+                    customdata=macro_df['avg_life_expectancy'],
+                    hovertemplate=(
+                        "<b>Year %{x}</b><br>"
+                        f"{income_metric}: <b>RM %{{y:.2f}}k</b><br>"
+                        "Avg Life Expectancy: <b>%{customdata:.2f} yrs</b>"
+                        "<extra></extra>"
+                    )
+                ),
+                secondary_y=True
+            )
+
+        fig_b.update_layout(
+            title=f"B. Macro Transition ({eth_map[panel_b_group][1]})<br><sup>Live births vs. annual income & life expectancy</sup>",
+            xaxis_title="Year",
+            plot_bgcolor="white",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+            height=540,
+            margin=dict(t=70, b=80, l=50, r=50)
+        )
+        fig_b.update_yaxes(title_text="Live Births (Thousands)", title_font=dict(color="#1F78B4"), secondary_y=False, gridcolor="#EEEEEE")
+        fig_b.update_yaxes(title_text=f"{income_metric} (RM '000)", title_font=dict(color="#E31A1C"), secondary_y=True, showgrid=False)
+
+        st.plotly_chart(fig_b, use_container_width=True)
+
+# --- TAB 2: Animated Play/Pause Bubble Chart ---
+with tab2:
+    if not plot_df.empty:
+        import plotly.express as px
+        anim_df = plot_df.copy()
+        anim_df['Ethnicity'] = anim_df['ethnicity'].map(lambda x: eth_map[x][1])
+
+        fig_anim = px.scatter(
+            anim_df,
+            x=income_col,
+            y="avg_life_expectancy",
+            animation_frame="year",
+            animation_group="Ethnicity",
+            size="live_births",
+            color="Ethnicity",
+            color_discrete_map={
+                "Chinese": "#1f77b4",
+                "Bumiputera": "#2ca02c",
+                "Indian": "#d62728",
+                "Malaysia Overall": "#333333"
+            },
+            size_max=45,
+            range_x=[anim_df[income_col].min() * 0.92, anim_df[income_col].max() * 1.08],
+            range_y=[anim_df['avg_life_expectancy'].min() - 0.8, anim_df['avg_life_expectancy'].max() + 0.8],
+            labels={
+                income_col: f"{income_metric} (RM)",
+                "avg_life_expectancy": "Average Life Expectancy (Years)",
+                "live_births": "National Live Births"
+            },
+            title="Press Play (▶) to Watch Ethnic Groups Move Across Years"
+        )
+        fig_anim.update_layout(plot_bgcolor="white", height=520)
+        fig_anim.update_xaxes(tickprefix="RM ", tickformat=",.0f", gridcolor="#EEEEEE")
+        fig_anim.update_yaxes(gridcolor="#EEEEEE")
+        st.plotly_chart(fig_anim, use_container_width=True)
+
+# ==========================================
+# 5. OPTIONAL DATA TABLE & CSV DOWNLOAD
 # ==========================================
 if show_data:
-    st.subheader("Merged Dataset")
-    st.dataframe(merged_df, use_container_width=True)
+    st.subheader("Filtered Merged Dataset")
+    st.dataframe(filtered_df, use_container_width=True)
 
-csv_data = merged_df.to_csv(index=False).encode('utf-8')
+csv_data = filtered_df.to_csv(index=False).encode('utf-8')
 st.download_button(
-    label="Download Merged Dataset (CSV)",
+    label="Download Filtered Dataset (CSV)",
     data=csv_data,
     file_name="merged_objective3_malaysia.csv",
     mime="text/csv"
