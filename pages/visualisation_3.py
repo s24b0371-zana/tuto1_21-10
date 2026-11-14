@@ -3,106 +3,106 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-import io
 
 # ==========================================
-# 0. STREAMLIT PAGE CONFIGURATION
+# 0. PAGE CONFIG
 # ==========================================
 st.set_page_config(
-    page_title="Objective 3: Malaysia Demographic & Socioeconomic Analysis",
-    page_icon="📊",
+    page_title="Malaysia Demographic & Socioeconomic Analysis",
     layout="wide"
 )
 
-st.title("📊 Objective 3: Malaysia's Live Births, Life Expectancy & Annual Income (2022–2025)")
-st.markdown("Multivariate demographic and socioeconomic analysis powered by open data from the **Department of Statistics Malaysia (DOSM)**.")
+st.title("Malaysia's Live Births, Life Expectancy & Annual Income (2022–2025)")
+st.markdown("Multivariate analysis examining demographic transition across ethnic groups in Malaysia.")
 
 # ==========================================
-# 1. FETCH & CACHE DATA FROM DOSM
+# 1. LOAD & PREPROCESS DATA (CACHED)
 # ==========================================
-@st.cache_data(ttl=86400)  # Cache data for 24 hours for fast performance
-def load_and_process_data():
-    urls = {
-        "birth": "https://storage.dosm.gov.my/demography/birth.parquet",
-        "life": "https://storage.dosm.gov.my/demography/life_expectancy_state_ethnic.parquet",
-        # Replace this URL with the exact working wages URL from your Colab notebook if needed
-        "wages": "https://storage.dosm.gov.my/labour/wages_annual_sex_ethnic.parquet",
-    }
+@st.cache_data
+def load_and_prepare_data():
+    # Option A: Load directly from OpenDOSM / DOSM official storage
+    # (Replace these URLs with pd.read_csv('your_local_file.csv') if using local files)
+    url_birth = "https://storage.dosm.gov.my/demography/birth.parquet"
+    url_life = "https://storage.dosm.gov.my/demography/life_expectancy.parquet"
+    url_wages = "https://storage.dosm.gov.my/labour/wages_annual.parquet"  # Adjust if using quarterly/monthly
 
-    dfs = {}
-    for name, url in urls.items():
-        try:
-            dfs[name] = pd.read_parquet(url)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load '{name}' from {url} -> {e}")
+    try:
+        birth = pd.read_parquet(url_birth)
+        life = pd.read_parquet(url_life)
+        wages = pd.read_parquet(url_wages)
+    except Exception:
+        # Option B: Fallback to local CSV files in your project folder
+        birth = pd.read_csv("df_birth.csv")
+        life = pd.read_csv("df_life.csv")
+        wages = pd.read_csv("df_wages.csv")
 
-    df_birth, df_life, df_wages = dfs["birth"], dfs["life"], dfs["wages"]
+    # Extract year from date column
+    for df in [birth, life, wages]:
+        df['year'] = pd.to_datetime(df['date']).dt.year
 
-    # Extract year from the date column
-    for df in [df_birth, df_life, df_wages]:
-        if 'date' in df.columns:
-            df['year'] = pd.to_datetime(df['date']).dt.year
+    # Aggregate birth data to annual if the dataset is monthly/quarterly
+    if birth.duplicated(subset=['year']).any():
+        birth = (
+            birth.groupby('year', as_index=False)
+            .agg({'abs': 'sum', 'rate': 'mean'})
+        )
 
-    # Aggregate life expectancy across all 16 states to national average
+    # Aggregate life expectancy across all states to national average
     le_nat = (
-        df_life.groupby(['year', 'sex', 'ethnicity'], as_index=False)['life_expectancy']
+        life.groupby(['year', 'sex', 'ethnicity'], as_index=False)['life_expectancy']
         .mean()
         .rename(columns={'life_expectancy': 'avg_life_expectancy'})
     )
 
     # Calculate annual income (Monthly Wage x 12)
-    df_wages['annual_income_median'] = df_wages['wages_median'] * 12
-    df_wages['annual_income_mean'] = df_wages['wages_mean'] * 12
+    wages['annual_income_median'] = wages['wages_median'] * 12
+    wages['annual_income_mean'] = wages['wages_mean'] * 12
 
     # Merge all three datasets
     merged_df = (
-        pd.merge(df_wages, le_nat, on=['year', 'sex', 'ethnicity'], how='inner')
-        .merge(df_birth[['year', 'abs', 'rate']], on='year', how='inner')
+        pd.merge(wages, le_nat, on=['year', 'sex', 'ethnicity'], how='inner')
+        .merge(birth[['year', 'abs', 'rate']], on='year', how='inner')
         .rename(columns={'abs': 'live_births', 'rate': 'birth_rate_per_1k'})
     )
-    
+
     return merged_df
 
-with st.spinner("Fetching and processing datasets from DOSM servers..."):
-    try:
-        merged_df = load_and_process_data()
-    except Exception as e:
-        st.error(f"Error loading datasets: {e}")
-        st.info("Tip: Double-check your `wages` URL from Colab or check OpenDOSM for the updated parquet link.")
-        st.stop()
+try:
+    merged_df = load_and_prepare_data()
+except Exception as e:
+    st.error(f"Could not load datasets. Ensure your CSV/Parquet files are in the same directory or check internet access. Error: {e}")
+    st.stop()
 
 # ==========================================
-# 2. SIDEBAR FILTERS (INTERACTIVE CONTROLS)
+# 2. SIDEBAR INTERACTIVE CONTROLS
 # ==========================================
-st.sidebar.header("⚙️ Display Settings")
+st.sidebar.header("Dashboard Controls")
 
-sex_options = {'both': 'Both Sexes', 'male': 'Male', 'female': 'Female'}
-selected_sex = st.sidebar.selectbox(
-    "Select Sex:",
-    options=list(sex_options.keys()),
-    format_func=lambda x: sex_options[x],
+income_metric = st.sidebar.radio(
+    "Income Metric:",
+    options=["Median Annual Income", "Mean Annual Income"],
     index=0
 )
+income_col = "annual_income_median" if income_metric == "Median Annual Income" else "annual_income_mean"
 
-available_ethnicities = ['bumi', 'chinese', 'indian', 'overall']
+available_ethnicities = ['chinese', 'bumi', 'indian', 'overall']
 selected_ethnicities = st.sidebar.multiselect(
     "Select Ethnic Groups (Panel A):",
     options=available_ethnicities,
-    default=available_ethnicities
+    default=available_ethnicities,
+    format_func=lambda x: "Malaysia Overall" if x == "overall" else ("Bumiputera" if x == "bumi" else x.capitalize())
 )
 
-if not selected_ethnicities:
-    st.warning("Please select at least one ethnic group from the sidebar.")
-    st.stop()
+show_data = st.sidebar.checkbox("Show Merged Data Table", value=False)
 
-# Filter data based on user selections
+# Filter for combined sex ('both') and selected ethnic groups
 plot_df = merged_df[
-    (merged_df['sex'] == selected_sex) &
+    (merged_df['sex'] == 'both') &
     (merged_df['ethnicity'].isin(selected_ethnicities))
 ].sort_values(['ethnicity', 'year'])
 
 overall_df = merged_df[
-    (merged_df['sex'] == selected_sex) &
+    (merged_df['sex'] == 'both') &
     (merged_df['ethnicity'] == 'overall')
 ].sort_values('year')
 
@@ -124,111 +124,110 @@ palette = {
 }
 
 # --- PANEL A: Connected Multivariate Bubble Trajectory ---
-for eth in selected_ethnicities:
-    color, label = palette[eth]
-    sub = plot_df[plot_df['ethnicity'] == eth].sort_values('year')
-    
-    if sub.empty:
-        continue
-        
-    x = sub['annual_income_median'].values
-    y = sub['avg_life_expectancy'].values
-    sizes = ((sub['live_births'] - 380000) / 1000) * 6 + 140
-    
-    ax1.plot(x, y, color=color, linewidth=2, alpha=0.75, zorder=2)
-    if len(x) >= 2:
-        ax1.annotate(
-            '', xy=(x[-1], y[-1]), xytext=(x[-2], y[-2]),
-            arrowprops=dict(arrowstyle='->', color=color, lw=2.2), zorder=3
-        )
-    
-    ax1.scatter(
-        x, y, s=sizes, color=color, alpha=0.82,
-        edgecolors='white', linewidth=1.5, label=label, zorder=4
-    )
-    
-    min_yr, max_yr = sub['year'].min(), sub['year'].max()
-    for yr, xi, yi in zip(sub['year'], x, y):
-        if yr in [min_yr, max_yr]:
-            offset_y = 0.18 if yr == max_yr else -0.26
-            ax1.text(
-                xi, yi + offset_y, f"{yr}", fontsize=8.5, fontweight='bold',
-                color=color, ha='center', va='center', zorder=5
+if not plot_df.empty:
+    min_year, max_year = int(plot_df['year'].min()), int(plot_df['year'].max())
+
+    for eth in selected_ethnicities:
+        color, label = palette[eth]
+        sub = plot_df[plot_df['ethnicity'] == eth].sort_values('year')
+        if sub.empty:
+            continue
+
+        x = sub[income_col].values
+        y = sub['avg_life_expectancy'].values
+        sizes = ((sub['live_births'] - 380000) / 1000).clip(lower=10) * 6 + 140
+
+        # Trajectory line
+        ax1.plot(x, y, color=color, linewidth=2, alpha=0.75, zorder=2)
+
+        # Directional arrow if at least 2 years exist
+        if len(x) >= 2:
+            ax1.annotate(
+                '', xy=(x[-1], y[-1]), xytext=(x[-2], y[-2]),
+                arrowprops=dict(arrowstyle='->', color=color, lw=2.2), zorder=3
             )
 
-ax1.set_title('A. Income vs. Life Expectancy Trajectory by Ethnicity\n(Bubble Size = National Live Births, 2022–2025)',
-              fontsize=11.5, fontweight='bold', pad=12, color='#111111')
-ax1.set_xlabel('Annual Median Income (RM)', fontsize=10.5, fontweight='bold', labelpad=8)
-ax1.set_ylabel('Average Life Expectancy (Years)', fontsize=10.5, fontweight='bold', labelpad=8)
-ax1.xaxis.set_major_formatter(ticker.StrMethodFormatter('RM {x:,.0f}'))
-ax1.xaxis.set_major_locator(ticker.MultipleLocator(4000))
-ax1.grid(True, linestyle='--', alpha=0.4, color='#BBBBBB')
-ax1.legend(loc='lower right', frameon=True, facecolor='#F9F9F9', title='Group (Start → End)', fontsize=9)
+        # Plot bubbles
+        ax1.scatter(
+            x, y, s=sizes, color=color, alpha=0.82,
+            edgecolors='white', linewidth=1.5, label=label, zorder=4
+        )
+
+        # Annotate start and end years
+        for yr, xi, yi in zip(sub['year'], x, y):
+            if yr in [min_year, max_year]:
+                offset_y = 0.18 if yr == max_year else -0.26
+                ax1.text(
+                    xi, yi + offset_y, f"{yr}", fontsize=8.5, fontweight='bold',
+                    color=color, ha='center', va='center', zorder=5
+                )
+
+    ax1.set_title(
+        f'A. {income_metric} vs. Life Expectancy by Ethnicity\n(Bubble Size = National Live Births, {min_year}–{max_year})',
+        fontsize=11.5, fontweight='bold', pad=12, color='#111111'
+    )
+    ax1.set_xlabel(f'{income_metric} (RM)', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax1.set_ylabel('Average Life Expectancy (Years)', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax1.xaxis.set_major_formatter(ticker.StrMethodFormatter('RM {x:,.0f}'))
+    ax1.xaxis.set_major_locator(ticker.MultipleLocator(4000))
+    ax1.margins(x=0.12, y=0.15)  # Dynamic padding instead of hardcoded limits
+    ax1.grid(True, linestyle='--', alpha=0.4, color='#BBBBBB')
+    ax1.legend(loc='lower right', frameon=True, facecolor='#F9F9F9', title=f'Group ({min_year} → {max_year})', fontsize=9)
+else:
+    ax1.text(0.5, 0.5, "Select at least one ethnic group in the sidebar.", ha='center', va='center')
 
 # --- PANEL B: Malaysia Macro Demographic Transition (Dual-Axis) ---
-years = overall_df['year'].astype(str)
-ax2_twin = ax2.twinx()
+if not overall_df.empty:
+    years = overall_df['year'].astype(str)
+    ax2_twin = ax2.twinx()
 
-bars = ax2.bar(years, overall_df['live_births'] / 1000, color='#A6CEE3', width=0.48, alpha=0.85, label='Live Births (Thousands)')
-ax2.set_ylabel('Live Births (Thousands)', fontsize=10.5, fontweight='bold', color='#1F78B4', labelpad=8)
-ax2.set_ylim(340, 500)
-ax2.tick_params(axis='y', labelcolor='#1F78B4')
+    # Bar chart for Live Births
+    bars = ax2.bar(years, overall_df['live_births'] / 1000, color='#A6CEE3', width=0.48, alpha=0.85, label='Live Births (Thousands)')
+    ax2.set_ylabel('Live Births (Thousands)', fontsize=10.5, fontweight='bold', color='#1F78B4', labelpad=8)
+    ax2.set_ylim(0, (overall_df['live_births'].max() / 1000) * 1.25)
+    ax2.tick_params(axis='y', labelcolor='#1F78B4')
 
-for bar in bars:
-    h = bar.get_height()
-    ax2.text(bar.get_x() + bar.get_width()/2, h + 4, f"{h:.1f}k", ha='center', va='bottom', fontsize=8.5, color='#1F78B4', fontweight='bold')
+    for bar in bars:
+        h = bar.get_height()
+        ax2.text(bar.get_x() + bar.get_width()/2, h + 6, f"{h:.1f}k", ha='center', va='bottom', fontsize=8.5, color='#1F78B4', fontweight='bold')
 
-ax2_twin.plot(years, overall_df['annual_income_median'] / 1000, color='#E31A1C', marker='o', linewidth=2.5, markersize=7, label="Annual Median Income (RM '000)")
-ax2_twin.set_ylabel("Annual Median Income (RM '000)", fontsize=10.5, fontweight='bold', color='#E31A1C', labelpad=8)
-ax2_twin.set_ylim(22, 35)
-ax2_twin.tick_params(axis='y', labelcolor='#E31A1C')
+    # Line chart for Annual Income + Life Expectancy labels
+    inc_k = overall_df[income_col] / 1000
+    ax2_twin.plot(years, inc_k, color='#E31A1C', marker='o', linewidth=2.5, markersize=7, label=f"{income_metric} (RM '000)")
+    ax2_twin.set_ylabel(f"{income_metric} (RM '000)", fontsize=10.5, fontweight='bold', color='#E31A1C', labelpad=8)
+    ax2_twin.set_ylim(inc_k.min() * 0.85, inc_k.max() * 1.18)
+    ax2_twin.tick_params(axis='y', labelcolor='#E31A1C')
 
-for idx, (inc, le_val) in enumerate(zip(overall_df['annual_income_median']/1000, overall_df['avg_life_expectancy'])):
-    ax2_twin.text(idx, inc + 0.55, f"RM {inc:.1f}k\n({le_val:.1f} yrs)", ha='center', va='bottom', fontsize=8, color='#B2182B', fontweight='bold')
+    for idx, (inc, le_val) in enumerate(zip(inc_k, overall_df['avg_life_expectancy'])):
+        ax2_twin.text(idx, inc + (inc_k.max() * 0.02), f"RM {inc:.1f}k\n({le_val:.1f} yrs)", ha='center', va='bottom', fontsize=8, color='#B2182B', fontweight='bold')
 
-ax2.set_title('B. Malaysia Macro Demographic Transition\n(Births Declining as Income & Life Expectancy Rise)',
-              fontsize=11.5, fontweight='bold', pad=12, color='#111111')
-ax2.set_xlabel('Year', fontsize=10.5, fontweight='bold', labelpad=8)
-ax2.grid(True, linestyle='--', alpha=0.35, color='#BBBBBB')
+    ax2.set_title('B. Malaysia Macro Demographic Transition\n(Births vs. Income & Life Expectancy)',
+                  fontsize=11.5, fontweight='bold', pad=12, color='#111111')
+    ax2.set_xlabel('Year', fontsize=10.5, fontweight='bold', labelpad=8)
+    ax2.grid(True, linestyle='--', alpha=0.35, color='#BBBBBB')
 
-lines1, labels1 = ax2.get_legend_handles_labels()
-lines2, labels2 = ax2_twin.get_legend_handles_labels()
-ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', frameon=True, facecolor='#F9F9F9', fontsize=8.5)
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax2_twin.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', frameon=True, facecolor='#F9F9F9', fontsize=8.5)
 
-plt.suptitle(f"Objective 3: Malaysia's Live Births, Life Expectancy & Annual Income ({sex_options[selected_sex]})",
+plt.suptitle("Objective 3: Malaysia's Live Births, Life Expectancy & Annual Income",
              fontsize=13.5, fontweight='bold', y=0.99)
 plt.tight_layout(rect=[0, 0, 1, 0.94])
 
-# Display chart in Streamlit
+# Render chart in Streamlit
 st.pyplot(fig)
 
 # ==========================================
-# 4. DOWNLOAD BUTTONS & DATA TABLE
+# 4. OPTIONAL DATA TABLE & CSV DOWNLOAD
 # ==========================================
-st.divider()
-col1, col2 = st.columns(2)
+if show_data:
+    st.subheader("Merged Dataset")
+    st.dataframe(merged_df, use_container_width=True)
 
-# Save chart into memory buffer for PNG download
-img_buffer = io.BytesIO()
-fig.savefig(img_buffer, format='png', dpi=300, bbox_inches='tight')
-img_buffer.seek(0)
-
-with col1:
-    st.download_button(
-        label="📥 Download Chart (PNG - 300 DPI)",
-        data=img_buffer,
-        file_name="objective3_malaysia_demographic_socioeconomic.png",
-        mime="image/png"
-    )
-
-with col2:
-    csv_data = merged_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Download Merged Dataset (CSV)",
-        data=csv_data,
-        file_name="merged_objective3_malaysia.csv",
-        mime="text/csv"
-    )
-
-with st.expander("📋 View Merged Dataset Table"):
-    st.dataframe(plot_df, use_container_width=True)
+csv_data = merged_df.to_csv(index=False).encode('utf-8')
+st.download_button(
+    label="Download Merged Dataset (CSV)",
+    data=csv_data,
+    file_name="merged_objective3_malaysia.csv",
+    mime="text/csv"
+)
