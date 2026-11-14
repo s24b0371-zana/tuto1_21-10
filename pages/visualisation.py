@@ -1,16 +1,39 @@
+import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Copy the existing dataframe so the original data in Colab remains untouched
+st.title("Trends in Live Births and Crude Birth Rate in Malaysia")
+
+# 1. Load the dataset directly (cached so it loads fast)
+@st.cache_data
+def load_data():
+    # Option A: Load directly from DOSM / OpenDOSM official Parquet URL
+    url = "https://storage.dosm.gov.my/demography/births_annual.parquet"
+    return pd.read_parquet(url)
+    
+    # Option B: If you uploaded a CSV file to your GitHub repo instead, 
+    # comment out the 2 lines above and uncomment the line below:
+    # return pd.read_csv("births_annual.csv")
+
+df_birth = load_data()
+
+# 2. Prepare the data
 df_plot = df_birth.copy()
 df_plot['date'] = pd.to_datetime(df_plot['date'])
 df_plot['year'] = df_plot['date'].dt.year
 
-# (Optional) Remove the '#' on the line below if you only want to filter for 2020–2024:
-# df_plot = df_plot[(df_plot['year'] >= 2020) & (df_plot['year'] <= 2024)]
+# Optional interactive year filter in Streamlit
+min_year, max_year = int(df_plot['year'].min()), int(df_plot['year'].max())
+selected_years = st.slider(
+    "Select Year Range",
+    min_value=min_year,
+    max_value=max_year,
+    value=(min_year, max_year)
+)
+df_plot = df_plot[(df_plot['year'] >= selected_years[0]) & (df_plot['year'] <= selected_years[1])]
 
-# Create a dual-axis visualization (Bars for Total Live Births, Line for Crude Birth Rate)
+# 3. Create the dual-axis visualization
 sns.set_theme(style="whitegrid")
 fig, ax1 = plt.subplots(figsize=(13, 6))
 
@@ -19,7 +42,10 @@ bars = ax1.bar(
     color='#2b5c8f', alpha=0.85, width=0.6,
     label='Total Live Births (abs)'
 )
-ax1.set_title('Trends in Live Births and Crude Birth Rate in Malaysia (2000–2025)', fontsize=13, fontweight='bold', pad=15)
+ax1.set_title(
+    f"Trends in Live Births and Crude Birth Rate in Malaysia ({selected_years[0]}–{selected_years[1]})",
+    fontsize=13, fontweight='bold', pad=15
+)
 ax1.set_xlabel('Year', fontweight='bold')
 ax1.set_ylabel('Total Live Births (abs)', color='#2b5c8f', fontweight='bold')
 ax1.set_xticks(df_plot['year'])
@@ -43,4 +69,6 @@ lines2, labels2 = ax2.get_legend_handles_labels()
 ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
 plt.tight_layout()
-plt.show()
+
+# 4. Display the chart in Streamlit (replaces plt.show())
+st.pyplot(fig)
